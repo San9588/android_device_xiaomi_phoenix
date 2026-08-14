@@ -26,8 +26,8 @@ jobs:
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
-          root-reserve-mb: 2048
-          swap-size-mb: 8192
+          root-reserve-mb: 1024
+          swap-size-mb: 2048
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
@@ -143,7 +143,7 @@ jobs:
           </manifest>
           EOF
 
-      - name: Sync source (current branch only, shallow, no tags)
+      - name: Sync source (current branch only, shallow, no tags, minimal groups)
         run: |
           cd "$BUILD_DIR"
           repo sync -c \
@@ -152,13 +152,16 @@ jobs:
             --optimized-fetch \
             --prune \
             --force-sync \
+            -g all,-notdefault,-darwin,-pdk \
             -j"$(nproc)"
 
-      - name: Disk usage after sync
+      - name: Disk usage after sync (diagnostic - always runs, even on failure)
+        if: always()
         run: |
+          echo "===== DISK SPACE ====="
           df -h /mnt/build
-          echo "---"
-          du -sh "$BUILD_DIR" 2>/dev/null || true
+          echo "===== TOP 20 LARGEST DIRS IN BUILD_DIR ====="
+          du -sh "$BUILD_DIR"/* 2>/dev/null | sort -rh | head -20 || true
 
       # ============ STEP 5: Trim extra weight from synced source ============
       - name: Remove unnecessary bulk (docs, other-arch prebuilts, test data)
