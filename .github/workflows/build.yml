@@ -1,63 +1,33 @@
-name: Check x86_64 Runner Specs
+name: Build crDroid - Phoenix
 
 on:
   workflow_dispatch:
+    inputs:
+      clean_ccache:
+        description: 'Start fresh (ignore existing ccache backup)'
+        required: false
+        default: 'false'
+
+env:
+  BUILD_DIR: /mnt/build/crdroid
+  CCACHE_DIR: /mnt/build/ccache
+  DEVICE: phoenix
+  BRANCH: "16.0"
+  CCACHE_RELEASE_TAG: ccache-phoenix-backup
+  BUILD_TIMEOUT_MIN: 320   # 5h20m compile budget, leaves room for setup/upload within 6h job limit
 
 jobs:
-  check-specs-raw:
-    name: Raw specs (before cleanup)
+  build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 350
     steps:
-      - name: CPU info
-        run: |
-          echo "===== CPU ====="
-          nproc
-          echo "---"
-          lscpu
 
-      - name: RAM info
-        run: |
-          echo "===== RAM ====="
-          free -h
-          echo "---"
-          cat /proc/meminfo | head -5
-
-      - name: Architecture
-        run: |
-          echo "===== ARCH ====="
-          uname -m
-          uname -a
-
-      - name: Disk info (raw, before cleanup)
-        run: |
-          echo "===== DISK (raw) ====="
-          df -h
-          echo "---"
-          echo "Root partition detail:"
-          df -h /
-          echo "---"
-          echo "Total, used, free summary:"
-          df -h --total
-
-      - name: OS info
-        run: |
-          echo "===== OS ====="
-          cat /etc/os-release
-
-  check-specs-after-cleanup:
-    name: Specs after maximize-build-space
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Disk BEFORE cleanup
-        run: |
-          echo "===== DISK BEFORE CLEANUP ====="
-          df -h /
-
+      # ============ STEP 1: Free up disk space ============
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 2048
-          swap-size-mb: 4096
+          swap-size-mb: 8192
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
@@ -65,26 +35,184 @@ jobs:
           remove-docker-images: 'true'
           build-mount-path: '/mnt/build'
 
-      - name: Disk AFTER cleanup
+      - name: Disk space after cleanup
+        run: df -h /mnt/build
+
+      # ============ STEP 2: Install repo tool + deps ============
+      - name: Install dependencies
         run: |
-          echo "===== DISK AFTER CLEANUP ====="
-          df -h
+          sudo apt-get update
+          sudo apt-get install -y git-core gnupg flex bison build-essential zip curl \
+            zlib1g-dev libc6-dev-i386 libncurses5 lib32ncurses5-dev x11proto-core-dev \
+            libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig \
+            python3 python-is-python3 rsync bc
+
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git config --global color.ui false
+
+      - name: Install GitHub CLI (for ccache release upload/download)
+        run: |
+          type gh >/dev/null 2>&1 || (sudo apt-get install -y gh)
+
+      # ============ STEP 3: Restore ccache from previous run ============
+      - name: Restore ccache from GitHub Release
+        if: ${{ github.event.inputs.clean_ccache != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$CCACHE_DIR"
+          echo "Checking for existing ccache backup..."
+          if gh release view "$CCACHE_RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Found backup, downloading..."
+            mkdir -p /tmp/ccache-restore
+            gh release download "$CCACHE_RELEASE_TAG" --repo "${{ github.repository }}" -D /tmp/ccache-restore --clobber
+            cat /tmp/ccache-restore/ccache-part-* > /tmp/ccache.tar.gz
+            tar -xzf /tmp/ccache.tar.gz -C "$CCACHE_DIR"
+            rm -rf /tmp/ccache-restore /tmp/ccache.tar.gz
+            echo "Ccache restored: $(du -sh $CCACHE_DIR | cut -f1)"
+          else
+            echo "No existing ccache backup found, starting fresh."
+          fi
+
+      # ============ STEP 4: Sync only what's needed ============
+      - name: Init repo (shallow, minimal)
+        run: |
+          mkdir -p "$BUILD_DIR"
+          cd "$BUILD_DIR"
+          repo init -u https://github.com/crdroidandroid/android.git \
+            -b "$BRANCH" \
+            --git-lfs \
+            --no-clone-bundle \
+            --depth=1
+
+      - name: Add local manifest (device-specific repos only)
+        run: |
+          mkdir -p "$BUILD_DIR/.repo/local_manifests"
+          cat > "$BUILD_DIR/.repo/local_manifests/phoenix.xml" << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <remote name="github" fetch="https://github.com/" />
+
+            <project name="crdroidandroid/android_device_xiaomi_phoenix"
+                     path="device/xiaomi/phoenix"
+                     remote="github"
+                     revision="16.0" />
+
+            <project name="crdroidandroid/android_device_xiaomi_sm6150-common"
+                     path="device/xiaomi/sm6150-common"
+                     remote="github"
+                     revision="16.0-phoenix" />
+
+            <project name="crdroidandroid/android_kernel_xiaomi_sm6150"
+                     path="kernel/xiaomi/sm6150"
+                     remote="github"
+                     revision="16.0" />
+
+            <project name="crdroidandroid/proprietary_vendor_xiaomi_phoenix"
+                     path="vendor/xiaomi/phoenix"
+                     remote="github" />
+
+            <project name="crdroidandroid/proprietary_vendor_xiaomi_sm6150-common"
+                     path="vendor/xiaomi/sm6150-common"
+                     remote="github"
+                     revision="16.0-phoenix" />
+          </manifest>
+          EOF
+
+      - name: Sync source (current branch only, shallow, no tags)
+        run: |
+          cd "$BUILD_DIR"
+          repo sync -c \
+            --no-clone-bundle \
+            --no-tags \
+            --optimized-fetch \
+            --prune \
+            --force-sync \
+            -j"$(nproc)"
+
+      - name: Disk usage after sync
+        run: |
+          df -h /mnt/build
           echo "---"
-          echo "Build mount specifically (this is where you'd put your source/build):"
+          du -sh "$BUILD_DIR" 2>/dev/null || true
+
+      # ============ STEP 5: Trim extra weight from synced source ============
+      - name: Remove unnecessary bulk (docs, other-arch prebuilts, test data)
+        run: |
+          cd "$BUILD_DIR"
+          # Darwin (Mac) host prebuilts - not needed on Linux runner
+          rm -rf prebuilts/clang/host/darwin-x86 2>/dev/null || true
+          rm -rf prebuilts/gcc/darwin-x86 2>/dev/null || true
+          # CTS / test suites not needed for a personal build
+          rm -rf cts 2>/dev/null || true
+          # Docs
+          rm -rf development/docs 2>/dev/null || true
+          # Prebuilt emulator images (only relevant if you build emulator target)
+          rm -rf prebuilts/qemu-kernel 2>/dev/null || true
+          echo "Cleanup done."
           df -h /mnt/build
 
-      - name: Swap check
+      # ============ STEP 6: Build ============
+      - name: Setup ccache env
         run: |
-          echo "===== SWAP ====="
-          free -h
-          swapon --show
+          echo "USE_CCACHE=1" >> "$GITHUB_ENV"
+          echo "CCACHE_EXEC=$(which ccache || echo /usr/bin/ccache)" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
+          echo "CCACHE_BASEDIR=$BUILD_DIR" >> "$GITHUB_ENV"
+          echo "CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime" >> "$GITHUB_ENV"
 
-      - name: Final summary
+      - name: Build (time-boxed)
         run: |
-          echo "===== FINAL SUMMARY ====="
-          echo "CPU cores: $(nproc)"
-          echo "RAM: $(free -h | awk '/^Mem:/ {print $2}')"
-          echo "Swap: $(free -h | awk '/^Swap:/ {print $2}')"
-          echo "Disk available on /mnt/build:"
-          df -h /mnt/build | awk 'NR==2 {print $4}'
-          echo "Architecture: $(uname -m)"
+          cd "$BUILD_DIR"
+          source build/envsetup.sh
+          export USE_CCACHE=1
+          export CCACHE_DIR="$CCACHE_DIR"
+          export CCACHE_BASEDIR="$BUILD_DIR"
+          ccache -M 30G || true
+          ccache -z || true
+
+          timeout "${BUILD_TIMEOUT_MIN}m" brunch "$DEVICE" || echo "BUILD_INCOMPLETE_OR_TIMEUP"
+
+          echo "===== CCACHE STATS ====="
+          ccache -s || true
+
+      - name: Disk usage after build
+        if: always()
+        run: df -h /mnt/build
+
+      # ============ STEP 7: Save ccache for next run (always, even on failure/timeout) ============
+      - name: Upload ccache to GitHub Release
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Packing ccache..."
+          tar -czf /tmp/ccache.tar.gz -C "$CCACHE_DIR" .
+          ls -lh /tmp/ccache.tar.gz
+          split -b 1900M /tmp/ccache.tar.gz /tmp/ccache-part-
+
+          # Delete old release/tag if exists, then recreate
+          gh release delete "$CCACHE_RELEASE_TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          git push --delete origin "$CCACHE_RELEASE_TAG" 2>/dev/null || true
+
+          gh release create "$CCACHE_RELEASE_TAG" /tmp/ccache-part-* \
+            --repo "${{ github.repository }}" \
+            --title "crDroid ccache backup (phoenix)" \
+            --notes "Auto-updated ccache backup. Restored automatically on next run."
+
+      # ============ STEP 8: Upload final zip if build completed ============
+      - name: Upload build output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crdroid-phoenix-output
+          path: |
+            /mnt/build/crdroid/out/target/product/*/crDroid*.zip
+          if-no-files-found: warn
+          retention-days: 7
