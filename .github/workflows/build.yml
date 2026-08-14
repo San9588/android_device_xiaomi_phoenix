@@ -47,13 +47,25 @@ jobs:
             x11proto-core-dev libx11-dev libgl1-mesa-dev libxml2-utils xsltproc unzip \
             fontconfig python3 python-is-python3 rsync bc ccache
 
-          # Older prebuilts inside AOSP still expect libncurses5/libtinfo5 at runtime.
-          # noble removed these from the archive, so pull the .deb directly from the
-          # last release that had them (jammy) and install manually.
-          wget -q http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
-          wget -q http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb
-          sudo dpkg -i libtinfo5_6.3-2ubuntu0.1_amd64.deb libncurses5_6.3-2ubuntu0.1_amd64.deb || sudo apt-get install -f -y
-          rm -f libtinfo5_6.3-2ubuntu0.1_amd64.deb libncurses5_6.3-2ubuntu0.1_amd64.deb
+          # Older AOSP prebuilts expect libncurses5/libtinfo5 at runtime.
+          # noble dropped these from the archive; try to fetch from old-releases
+          # mirror, but never fail the job if unavailable - most modern branches
+          # don't strictly need them.
+          set +e
+          for pkg_url in \
+            "http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb" \
+            "http://old-releases.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb"; do
+            wget -q "$pkg_url" -O /tmp/libtinfo5.deb && sudo dpkg -i /tmp/libtinfo5.deb && break
+          done
+          for pkg_url in \
+            "http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb" \
+            "http://old-releases.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.3-2ubuntu0.1_amd64.deb"; do
+            wget -q "$pkg_url" -O /tmp/libncurses5.deb && sudo dpkg -i /tmp/libncurses5.deb && break
+          done
+          sudo apt-get install -f -y
+          rm -f /tmp/libtinfo5.deb /tmp/libncurses5.deb
+          set -e
+          echo "Legacy ncurses libs step done (non-fatal if unavailable)."
 
           mkdir -p ~/bin
           curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
