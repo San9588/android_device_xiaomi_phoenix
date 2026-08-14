@@ -117,8 +117,6 @@ jobs:
           cat > "$BUILD_DIR/.repo/local_manifests/phoenix.xml" << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <remote name="github" fetch="https://github.com/" />
-
             <project name="crdroidandroid/android_device_xiaomi_phoenix"
                      path="device/xiaomi/phoenix"
                      remote="github"
