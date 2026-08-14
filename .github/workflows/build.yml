@@ -1,0 +1,90 @@
+name: Check x86_64 Runner Specs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check-specs-raw:
+    name: Raw specs (before cleanup)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: CPU info
+        run: |
+          echo "===== CPU ====="
+          nproc
+          echo "---"
+          lscpu
+
+      - name: RAM info
+        run: |
+          echo "===== RAM ====="
+          free -h
+          echo "---"
+          cat /proc/meminfo | head -5
+
+      - name: Architecture
+        run: |
+          echo "===== ARCH ====="
+          uname -m
+          uname -a
+
+      - name: Disk info (raw, before cleanup)
+        run: |
+          echo "===== DISK (raw) ====="
+          df -h
+          echo "---"
+          echo "Root partition detail:"
+          df -h /
+          echo "---"
+          echo "Total, used, free summary:"
+          df -h --total
+
+      - name: OS info
+        run: |
+          echo "===== OS ====="
+          cat /etc/os-release
+
+  check-specs-after-cleanup:
+    name: Specs after maximize-build-space
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Disk BEFORE cleanup
+        run: |
+          echo "===== DISK BEFORE CLEANUP ====="
+          df -h /
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 2048
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          build-mount-path: '/mnt/build'
+
+      - name: Disk AFTER cleanup
+        run: |
+          echo "===== DISK AFTER CLEANUP ====="
+          df -h
+          echo "---"
+          echo "Build mount specifically (this is where you'd put your source/build):"
+          df -h /mnt/build
+
+      - name: Swap check
+        run: |
+          echo "===== SWAP ====="
+          free -h
+          swapon --show
+
+      - name: Final summary
+        run: |
+          echo "===== FINAL SUMMARY ====="
+          echo "CPU cores: $(nproc)"
+          echo "RAM: $(free -h | awk '/^Mem:/ {print $2}')"
+          echo "Swap: $(free -h | awk '/^Swap:/ {print $2}')"
+          echo "Disk available on /mnt/build:"
+          df -h /mnt/build | awk 'NR==2 {print $4}'
+          echo "Architecture: $(uname -m)"
