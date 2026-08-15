@@ -124,7 +124,7 @@ jobs:
           </manifest>
           EOF
 
-      - name: Sync source (current branch only, shallow, no tags, minimal groups)
+      - name: Sync source (current branch only, shallow, no tags)
         run: |
           cd "$BUILD_DIR"
           repo sync -c \
@@ -133,8 +133,17 @@ jobs:
             --optimized-fetch \
             --prune \
             --force-sync \
-            -g all,-notdefault,-darwin,-pdk \
             -j"$(nproc)"
+
+      - name: Verify core build tools synced
+        run: |
+          if [ ! -f "$BUILD_DIR/build/envsetup.sh" ]; then
+            echo "ERROR: build/envsetup.sh missing after sync - core 'build' project didn't sync."
+            echo "Contents of BUILD_DIR:"
+            ls -la "$BUILD_DIR"
+            exit 1
+          fi
+          echo "build/envsetup.sh found, core tree looks intact."
 
       - name: Resolve device dependencies via roomservice (breakfast)
         run: |
