@@ -111,7 +111,7 @@ jobs:
             --no-clone-bundle \
             --depth=1
 
-      - name: Add local manifest (device-specific repos only)
+      - name: Add local manifest (device tree only - roomservice resolves the rest)
         run: |
           mkdir -p "$BUILD_DIR/.repo/local_manifests"
           cat > "$BUILD_DIR/.repo/local_manifests/phoenix.xml" << 'EOF'
@@ -121,25 +121,6 @@ jobs:
                      path="device/xiaomi/phoenix"
                      remote="github"
                      revision="16.0" />
-
-            <project name="crdroidandroid/android_device_xiaomi_sm6150-common"
-                     path="device/xiaomi/sm6150-common"
-                     remote="github"
-                     revision="16.0-phoenix" />
-
-            <project name="crdroidandroid/android_kernel_xiaomi_sm6150"
-                     path="kernel/xiaomi/sm6150"
-                     remote="github"
-                     revision="16.0" />
-
-            <project name="crdroidandroid/proprietary_vendor_xiaomi_phoenix"
-                     path="vendor/xiaomi/phoenix"
-                     remote="github" />
-
-            <project name="crdroidandroid/proprietary_vendor_xiaomi_sm6150-common"
-                     path="vendor/xiaomi/sm6150-common"
-                     remote="github"
-                     revision="16.0-phoenix" />
           </manifest>
           EOF
 
@@ -153,6 +134,23 @@ jobs:
             --prune \
             --force-sync \
             -g all,-notdefault,-darwin,-pdk \
+            -j"$(nproc)"
+
+      - name: Resolve device dependencies via roomservice (breakfast)
+        run: |
+          cd "$BUILD_DIR"
+          source build/envsetup.sh
+          breakfast "$DEVICE" || echo "First breakfast pass done (roomservice.xml generated if needed)."
+
+      - name: Sync newly resolved dependencies (kernel, vendor, common)
+        run: |
+          cd "$BUILD_DIR"
+          repo sync -c \
+            --no-clone-bundle \
+            --no-tags \
+            --optimized-fetch \
+            --prune \
+            --force-sync \
             -j"$(nproc)"
 
       - name: Disk usage after sync (diagnostic - always runs, even on failure)
